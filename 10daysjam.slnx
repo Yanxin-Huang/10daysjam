@@ -5,5 +5,5 @@
     <BuildType Name="Release" />
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="10daysjam/10daysjam.vcxproj" />
+  <Project Path="10daysjam/10daysjam.vcxproj" Id="03824218-f129-4f85-8107-6c189d0312cc" />
 </Solution>
