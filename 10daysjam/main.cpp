@@ -51,10 +51,14 @@ const int kStageLeft = 192;
 const int kStageTop = 94;
 const int kMaxMouthLength = 64;
 const int kPlayerCount = 2;
-const int kBoxCount = 2;
-const int kFloorSwitchCount = 2;
-const int kDoorCount = 2;
-const int kStageCount = 7;
+const int kBoxCount = 10;
+const int kFloorSwitchCount = 5;
+const int kDoorCount = 5;
+const int kStageCount = 8;
+const int kClearPauseFrames = 12;
+const int kClearHeartFrames = 30;
+const int kClearFadeFrames = 30;
+const int kClearReadyFrames = 102;
 const int kDigitCount = 10;
 const int kTitleMenuItemCount = 2;
 const int kImageSize = 96;
@@ -86,6 +90,7 @@ const int kStageMoveLimits[kStageCount][kPlayerCount] = {
 	{13, 14},
 	{10, 10},
 	{11, 12},
+	{16, 16},
 };
 
 // メニューとステージの表示名
@@ -171,7 +176,10 @@ struct Door {
 struct TextureHandles {
 	int player1Stand;
 	int player2Stand;
+	int player1Idle;
+	int player2Idle;
 	int playerIcons[kPlayerCount];
+	int playerGuides[kPlayerCount];
 	int box;
 	int floorSwitch;
 	int pressedFloorSwitch;
@@ -186,6 +194,7 @@ struct TextureHandles {
 	int openDoor;
 	int clearScreen;
 	int titleScreen;
+	int selectScreen;
 	int stageLabel;
 	int numberDigits[kDigitCount];
 };
@@ -193,6 +202,7 @@ struct TextureHandles {
 // ゲーム全体の管理データ
 struct Game {
 	GameState state;
+	int clearFrame;
 	TileType stage[kStageRow][kStageColumn];
 	Player players[kPlayerCount];
 	Box boxes[kBoxCount];
@@ -309,6 +319,13 @@ bool IsStageSixFloor(int x, int y) {
 
 // ステージごとの壁配置を返す
 bool IsWallTile(int stageIndex, int x, int y) {
+	// 8面：左右の部屋を下側の通路でつなぐ
+	if (stageIndex == 7) {
+		const bool rooms = y >= 0 && y <= 3 && ((x >= 1 && x <= 5) || (x >= 10 && x <= 14));
+		const bool sides = (x == 1 || x == 14) && y >= 4 && y <= 7;
+		const bool bottom = y == 7 && x >= 1 && x <= 14;
+		return !(rooms || sides || bottom);
+	}
 	if (stageIndex == 0) {
 		return !IsTutorialFloor(x, y);
 	}
@@ -353,6 +370,9 @@ int GetFloorQuarterTurns(int stageIndex, int x, int y) {
 
 // ステージごとの開始位置を返す
 GridPosition GetPlayerStartPosition(int stageIndex, int playerIndex) {
+	if (stageIndex == 7) {
+		return playerIndex == 0 ? GridPosition{ 12, 0 } : GridPosition{ 3, 0 };
+	}
 	if (stageIndex == 0) {
 		return playerIndex == 0 ? GridPosition{ 12, 4 } : GridPosition{ 3, 4 };
 	}
@@ -376,6 +396,13 @@ GridPosition GetPlayerStartPosition(int stageIndex, int playerIndex) {
 
 // ステージごとの箱の位置を返す
 GridPosition GetBoxStartPosition(int stageIndex, int boxIndex) {
+	if (stageIndex == 7) {
+		const GridPosition positions[kBoxCount] = {
+			{1, 1}, {5, 1}, {2, 2}, {4, 2}, {3, 3},
+			{11, 1}, {13, 1}, {11, 2}, {12, 2}, {14, 3},
+		};
+		return positions[boxIndex];
+	}
 	if (stageIndex == 3) {
 		return boxIndex == 0 ? GridPosition{ 2, 1 } : GridPosition{ 8, 5 };
 	}
@@ -396,6 +423,11 @@ GridPosition GetBoxStartPosition(int stageIndex, int boxIndex) {
 
 // ステージごとのスイッチ位置を返す
 GridPosition GetFloorSwitchPosition(int stageIndex, int switchIndex) {
+	if (stageIndex == 7) {
+		// 設計図の番号1～5の順
+		const GridPosition positions[kFloorSwitchCount] = { {14, 0}, {5, 2}, {10, 0}, {10, 3}, {5, 0} };
+		return positions[switchIndex];
+	}
 	if (stageIndex == 3) {
 		return switchIndex == 0 ? GridPosition{ 2, 0 } : GridPosition{ 8, 3 };
 	}
@@ -413,6 +445,10 @@ GridPosition GetFloorSwitchPosition(int stageIndex, int switchIndex) {
 
 // ステージごとのドア位置を返す
 GridPosition GetDoorPosition(int stageIndex, int doorIndex) {
+	if (stageIndex == 7) {
+		const GridPosition positions[kDoorCount] = { {1, 4}, {14, 4}, {11, 7}, {7, 7}, {3, 7} };
+		return positions[doorIndex];
+	}
 	if (stageIndex == 3) {
 		return doorIndex == 0 ? GridPosition{ 5, 5 } : GridPosition{ 11, 8 };
 	}
@@ -439,6 +475,7 @@ void InitializeStage(Game& game) {
 
 // プレイ状態を最初からやり直す
 void ResetGame(Game& game) {
+	game.clearFrame = 0;
 	InitializeStage(game);
 
 	game.players[0] = {
@@ -448,20 +485,20 @@ void ResetGame(Game& game) {
 		CharacterType::Female, GetPlayerStartPosition(game.currentStageIndex, 1), {}, false, 0xD94F7CFF, 0xFF87ADFF,
 		kStageMoveLimits[game.currentStageIndex][1] };
 	for (int boxIndex = 0; boxIndex < kBoxCount; ++boxIndex) {
-		const bool isActive = game.currentStageIndex >= 1 &&
-			(boxIndex == 0 || game.currentStageIndex == 3 || game.currentStageIndex == 4);
+		const bool isActive = game.currentStageIndex == 7 || (game.currentStageIndex >= 1 &&
+			(boxIndex == 0 || (boxIndex == 1 && (game.currentStageIndex == 3 || game.currentStageIndex == 4))));
 		game.boxes[boxIndex] = {
 			GetBoxStartPosition(game.currentStageIndex, boxIndex), isActive, 0x9A5A3AFF };
 	}
 	for (int switchIndex = 0; switchIndex < kFloorSwitchCount; ++switchIndex) {
-		const bool isActive = game.currentStageIndex >= 2 &&
-			(switchIndex == 0 || game.currentStageIndex == 3 || game.currentStageIndex >= 5);
+		const bool isActive = game.currentStageIndex == 7 || (game.currentStageIndex >= 2 &&
+			(switchIndex == 0 || (switchIndex == 1 && (game.currentStageIndex == 3 || game.currentStageIndex >= 5))));
 		game.floorSwitches[switchIndex] = {
 			GetFloorSwitchPosition(game.currentStageIndex, switchIndex), isActive, 0x62C62FFF };
 	}
 	for (int doorIndex = 0; doorIndex < kDoorCount; ++doorIndex) {
-		const bool isActive = game.currentStageIndex >= 2 &&
-			(doorIndex == 0 || game.currentStageIndex == 3 || game.currentStageIndex >= 5);
+		const bool isActive = game.currentStageIndex == 7 || (game.currentStageIndex >= 2 &&
+			(doorIndex == 0 || (doorIndex == 1 && (game.currentStageIndex == 3 || game.currentStageIndex >= 5))));
 		game.doors[doorIndex] = { GetDoorPosition(game.currentStageIndex, doorIndex), isActive, 0xAAB6C0FF };
 	}
 	game.state = GameState::Playing;
@@ -471,7 +508,8 @@ void ResetGame(Game& game) {
 void InitializeGame(Game& game) {
 	game.titleMenuIndex = 0;
 	game.currentStageIndex = 0;
-	game.maxUnlockedStageIndex = 0;
+	// テスト用に全ステージを解放する
+	game.maxUnlockedStageIndex = kStageCount - 1;
 	for (int stageIndex = 0; stageIndex < kStageCount; ++stageIndex) {
 		game.isStageCleared[stageIndex] = false;
 	}
@@ -526,7 +564,7 @@ bool IsFloorSwitchPressed(const Game& game, int switchIndex) {
 bool IsDoorOpen(const Game& game, int doorIndex) {
 	int switchIndex = doorIndex;
 	if (game.currentStageIndex == 3 || game.currentStageIndex == 5) {
-		switchIndex = kDoorCount - 1 - doorIndex;
+		switchIndex = 1 - doorIndex;
 	}
 	return !game.doors[doorIndex].isActive || IsFloorSwitchPressed(game, switchIndex);
 }
@@ -540,6 +578,19 @@ bool IsDoorBlocking(const Game& game, GridPosition position) {
 		}
 	}
 	return false;
+}
+
+// 8面では閉じたドアに挟まれた箱を消す
+void UpdateCrushedBoxes(Game& game) {
+	if (game.currentStageIndex != 7) {
+		return;
+	}
+	for (int boxIndex = 0; boxIndex < kBoxCount; ++boxIndex) {
+		Box& box = game.boxes[boxIndex];
+		if (box.isActive && IsDoorBlocking(game, box.position)) {
+			box.isActive = false;
+		}
+	}
 }
 
 // 閉じたドアに挟まれた口を動けなくする
@@ -786,7 +837,8 @@ void DrawStage(const Game& game, int wallTextureHandle, int floorTextureHandle) 
 // 素材の有効部分を基準点の周りに回転して描画する
 void DrawMouthTexture(
 	int centerX, int centerY, int left, int top, int right, int bottom,
-	int sourceX, int sourceY, int sourceWidth, int sourceHeight, int textureHandle, int quarterTurns) {
+	int sourceX, int sourceY, int sourceWidth, int sourceHeight, int textureHandle, int quarterTurns,
+	unsigned int color = 0xFFFFFFFF) {
 	int vertexX[4] = { left, right, left, right };
 	int vertexY[4] = { top, top, bottom, bottom };
 	for (int index = 0; index < 4; ++index) {
@@ -801,7 +853,7 @@ void DrawMouthTexture(
 	Novice::DrawQuad(
 		vertexX[0], vertexY[0], vertexX[1], vertexY[1],
 		vertexX[2], vertexY[2], vertexX[3], vertexY[3],
-		sourceX, sourceY, sourceWidth, sourceHeight, textureHandle, 0xFFFFFFFF);
+		sourceX, sourceY, sourceWidth, sourceHeight, textureHandle, color);
 }
 
 // 経路の途中で曲がっているか調べる
@@ -848,14 +900,16 @@ void DrawMouthTurnPart(
 
 // 口先の透明余白を除き、経路中央に合わせる
 void DrawMouthTip(const Player& player, GridPosition tip, GridPosition previous, int textureHandle) {
-	int quarterTurns = tip.x > previous.x ? 0 : tip.y > previous.y ? 1 : tip.x < previous.x ? 2 : 3;
+	const int direction = tip.x > previous.x ? 0 : tip.y > previous.y ? 1 : tip.x < previous.x ? 2 : 3;
 	const bool isMale = player.characterType == CharacterType::Male;
+	const bool isFlipped = !isMale != (direction == 2);
+	const int quarterTurns = direction == 2 ? 0 : direction;
 	const int halfWidth = ScaleSize(24) / 2;
 	const int halfHeight = ScaleSize(kMouthThickness) / 2;
-	// 女の口先は左右反転で基準方向をそろえる
+	// 左向きは上下を保ったまま左右反転する
 	DrawMouthTexture(
-		GetScreenX(tip.x), GetScreenY(tip.y), isMale ? -halfWidth : halfWidth,
-		-halfHeight, isMale ? halfWidth : -halfWidth, halfHeight,
+		GetScreenX(tip.x), GetScreenY(tip.y), isFlipped ? halfWidth : -halfWidth,
+		-halfHeight, isFlipped ? -halfWidth : halfWidth, halfHeight,
 		isMale ? 54 : 3, 42, 39, 30, textureHandle, quarterTurns);
 }
 
@@ -883,7 +937,9 @@ void DrawMouth(
 }
 
 // プレイヤー本体を描画する
-void DrawPlayer(const Player& player, int textureHandle, int stageIndex) {
+void DrawPlayer(const Player& player, int standTextureHandle, int idleTextureHandle, int stageIndex, int clearFrame = 0) {
+	// 完全に口を戻したら、口付きの待機画像へ切り替える
+	const int textureHandle = player.mouth.pathCount == 0 ? idleTextureHandle : standTextureHandle;
 	// 待機中は隣の通路、伸長中は最初の一歩へ向く
 	const int directionX[4] = { 1, 0, -1, 0 };
 	const int directionY[4] = { 0, 1, 0, -1 };
@@ -912,6 +968,16 @@ void DrawPlayer(const Player& player, int textureHandle, int stageIndex) {
 		GetScreenX(player.position.x), GetScreenY(player.position.y),
 		isFlipped ? right : left, top, isFlipped ? left : right, top + size,
 		0, 0, kImageSize, kImageSize, textureHandle, quarterTurns);
+	// キスの後にカラー画像を重ねて呪いを解く
+	if (clearFrame > kClearPauseFrames) {
+		int elapsed = clearFrame - kClearPauseFrames;
+		if (elapsed > kClearHeartFrames) { elapsed = kClearHeartFrames; }
+		const unsigned int alpha = static_cast<unsigned int>(255 * elapsed / kClearHeartFrames);
+		DrawMouthTexture(
+			GetScreenX(player.position.x), GetScreenY(player.position.y),
+			isFlipped ? right : left, top, isFlipped ? left : right, top + size,
+			15 * kImageSize, 0, kImageSize, kImageSize, idleTextureHandle, quarterTurns, 0xFFFFFF00 | alpha);
+	}
 }
 
 // 箱の画像を描画する
@@ -954,11 +1020,29 @@ void DrawHeart(int centerX, int centerY, int baseDrawSize, int textureHandle) {
 }
 
 // クリア画像を画面全体に描画する
-void DrawClearScreen(int textureHandle) {
+void DrawClearScreen(int textureHandle, unsigned int alpha = 255) {
 	Novice::DrawQuad(
 		ScaleX(0), ScaleY(0), ScaleX(kBaseWidth), ScaleY(0), ScaleX(0), ScaleY(kBaseHeight),
 		ScaleX(kBaseWidth), ScaleY(kBaseHeight), 0, 0, kClearImageWidth,
-		kClearImageHeight, textureHandle, 0xFFFFFFFF);
+		kClearImageHeight, textureHandle, 0xFFFFFF00 | alpha);
+}
+
+// 接吻位置のハートを弾ませ、クリア画像へ移る
+void DrawClearTransition(const Game& game, const TextureHandles& textures) {
+	if (game.clearFrame <= kClearPauseFrames) { return; }
+	int elapsed = game.clearFrame - kClearPauseFrames;
+	if (elapsed > kClearHeartFrames) { elapsed = kClearHeartFrames; }
+	const float progress = static_cast<float>(elapsed) / kClearHeartFrames;
+	const float sizeRate = progress < 0.6f ? 1.2f * progress / 0.6f : 1.2f - 0.2f * (progress - 0.6f) / 0.4f;
+	const GridPosition kissPosition = GetMouthTip(game.players[0]);
+	DrawImageCentered(
+		GetScreenX(kissPosition.x), GetScreenY(kissPosition.y) - ScaleSize(static_cast<int>(36 * progress)),
+		ScaleSize(static_cast<int>(48 * sizeRate)), textures.heart);
+	int fadeFrame = game.clearFrame - kClearPauseFrames - kClearHeartFrames;
+	if (fadeFrame > 0) {
+		if (fadeFrame > kClearFadeFrames) { fadeFrame = kClearFadeFrames; }
+		DrawClearScreen(textures.clearScreen, static_cast<unsigned int>(255 * fadeFrame / kClearFadeFrames));
+	}
 }
 
 // 選択状態付きのメニューボタンを描画する
@@ -1050,6 +1134,19 @@ void DrawMoveCount(const Player& player, int iconTextureHandle, int centerX, con
 	DrawNumberValue(movesLeft, centerX + 40, panelY, 46, textures);
 }
 
+// 操作ガイドを元画像の縦横比で描画する
+void DrawPlayerGuide(int centerX, int textureHandle) {
+	const int width = 240;
+	const int height = 80;
+	const int centerY = 646;
+	Novice::DrawQuad(
+		ScaleX(centerX - width / 2), ScaleY(centerY - height / 2),
+		ScaleX(centerX + width / 2), ScaleY(centerY - height / 2),
+		ScaleX(centerX - width / 2), ScaleY(centerY + height / 2),
+		ScaleX(centerX + width / 2), ScaleY(centerY + height / 2),
+		0, 0, 288, 96, textureHandle, 0xFFFFFFFF);
+}
+
 // STAGE画像を縦横比を保って描画する
 void DrawStageLabel(int centerX, int centerY, bool isUnlocked, int textureHandle) {
 	const int drawWidth = ScaleSize(kStageLabelDrawWidth);
@@ -1080,16 +1177,10 @@ int GetStageSelectCenterY(int stageIndex) {
 	return stageIndex < kStageSelectColumnCount ? kStageSelectTopY : kStageSelectBottomY;
 }
 
-// 白い達成枠とステージ番号を4個と3個に分けて描画する
+// 選択背景に達成枠とステージ番号を描画する
 void DrawStageSelectScreen(const Game& game, const TextureHandles& textures) {
-	Novice::DrawBox(
-		ScaleX(0), ScaleY(0), ScaleSize(kBaseWidth), ScaleSize(12), 0.0f, 0xB99CFFFF, kFillModeSolid);
+	DrawClearScreen(textures.selectScreen);
 	DrawStageLabel(kBaseWidth / 2, 72, true, textures.stageLabel);
-
-	// 全体をまとめる背景パネル
-	Novice::DrawBox(ScaleX(176), ScaleY(125), ScaleSize(928), ScaleSize(455), 0.0f, 0x343A4AFF, kFillModeSolid);
-	Novice::DrawBox(ScaleX(182), ScaleY(131), ScaleSize(916), ScaleSize(443), 0.0f, 0x1B1F2CFF, kFillModeSolid);
-	Novice::DrawBox(ScaleX(300), ScaleY(133), ScaleSize(680), ScaleSize(3), 0.0f, 0x665983FF, kFillModeSolid);
 
 	for (int index = 0; index < kStageCount; ++index) {
 		const int centerX = GetStageSelectCenterX(index);
@@ -1139,9 +1230,15 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 	TextureHandles textures = {
 		Novice::LoadTexture("./Resoures/images/player1stand.png"),
 		Novice::LoadTexture("./Resoures/images/player2stand.png"),
+		Novice::LoadTexture("./Resoures/images/playerBoy.png"),
+		Novice::LoadTexture("./Resoures/images/playerGirl.png"),
 		{
 			Novice::LoadTexture("./Resoures/images/player1Icon.png"),
 			Novice::LoadTexture("./Resoures/images/player2Icon_.png"),
+		},
+		{
+			Novice::LoadTexture("./Resoures/images/player1Guide.png"),
+			Novice::LoadTexture("./Resoures/images/player2Guide.png"),
 		},
 		Novice::LoadTexture("./Resoures/images/Box.png"),
 		Novice::LoadTexture("./Resoures/images/switch.png"),
@@ -1157,6 +1254,7 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 		Novice::LoadTexture("./Resoures/images/openDoor.png"),
 		Novice::LoadTexture("./Resoures/images/ClearScreen.png"),
 		Novice::LoadTexture("./Resoures/images/TitleScreen.png"),
+		Novice::LoadTexture("./Resoures/images/select.png"),
 		Novice::LoadTexture("./Resoures/images/stage.png"),
 		{
 			Novice::LoadTexture("./Resoures/images/0.png"),
@@ -1271,7 +1369,9 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 			} else if (IsKeyPressed(keys, preKeys, DIK_R)) {
 				ResetGame(game);
 			} else if (game.state == GameState::Clear) {
-				if (IsKeyPressed(keys, preKeys, DIK_SPACE) || IsKeyPressed(keys, preKeys, DIK_RETURN)) {
+				if (game.clearFrame < kClearReadyFrames) { ++game.clearFrame; }
+				if (game.clearFrame >= kClearReadyFrames &&
+					(IsKeyPressed(keys, preKeys, DIK_SPACE) || IsKeyPressed(keys, preKeys, DIK_RETURN))) {
 					const int nextStageIndex = game.currentStageIndex + 1;
 					if (nextStageIndex < kStageCount) {
 						StartStage(game, nextStageIndex);
@@ -1283,14 +1383,17 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 			} else {
 				// 2人分の口を別々のキーで操作する
 				UpdateMouthControl(game, 0, keys, preKeys, DIK_A, DIK_D, DIK_W, DIK_S);
+				UpdateCrushedBoxes(game);
 				UpdateMouthBrokenState(game);
 				UpdateMouthControl(game, 1, keys, preKeys, DIK_LEFT, DIK_RIGHT, DIK_UP, DIK_DOWN);
+				UpdateCrushedBoxes(game);
 				UpdateMouthBrokenState(game);
 
 				if (IsStageClear(game)) {
 					game.isStageCleared[game.currentStageIndex] = true;
 					UnlockNextStage(game);
 					game.state = GameState::Clear;
+					game.clearFrame = 0;
 				}
 			}
 		}
@@ -1364,8 +1467,8 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 			for (int boxIndex = 0; boxIndex < kBoxCount; ++boxIndex) {
 				DrawBoxObject(game.boxes[boxIndex], textures.box);
 			}
-			DrawPlayer(game.players[0], textures.player1Stand, game.currentStageIndex);
-			DrawPlayer(game.players[1], textures.player2Stand, game.currentStageIndex);
+			DrawPlayer(game.players[0], textures.player1Stand, textures.player1Idle, game.currentStageIndex, game.clearFrame);
+			DrawPlayer(game.players[1], textures.player2Stand, textures.player2Idle, game.currentStageIndex, game.clearFrame);
 
 			/*---------------------------------
 			 残り行動回数の描画処理
@@ -1374,6 +1477,8 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 			if (game.state == GameState::Playing) {
 				DrawMoveCount(game.players[0], textures.playerIcons[0], 140, textures);
 				DrawMoveCount(game.players[1], textures.playerIcons[1], 1140, textures);
+				DrawPlayerGuide(350, textures.playerGuides[0]);
+				DrawPlayerGuide(930, textures.playerGuides[1]);
 			}
 
 			/*---------------------------------
@@ -1381,7 +1486,7 @@ int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
 			---------------------------------*/
 
 			if (game.state == GameState::Clear) {
-				DrawClearScreen(textures.clearScreen);
+				DrawClearTransition(game, textures);
 			}
 		}
 
