@@ -1,2 +1,0 @@
-[console_scripts]
-pixel-snapper=pixel_snapper.cli:main
